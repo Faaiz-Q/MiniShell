@@ -5,11 +5,15 @@
 #include <stdlib.h>
 #include <sys/wait.h>
 
+#define MAX_CMDS 10
+#define MAX_ARGS 100
+#define MAX_LEN 1024
+
 int main()
 {
     while(1)
     {
-        char command[1024];
+        char command[MAX_LEN];
 
         printf("myshell> ");
 
@@ -25,12 +29,15 @@ int main()
             break;
         }
 
-        // ---------------- PARSING ----------------
-        char *argv1[100];
-        char *argv2[100];
-        int argc1 = 0, argc2 = 0;
+        // ---------------- PARSE INTO COMMANDS ----------------
 
-        int is_pipe = 0;
+        char *cmds[MAX_CMDS][MAX_ARGS];
+        int argc[MAX_CMDS];
+
+        for(int i = 0; i < MAX_CMDS; i++)
+            argc[i] = 0;
+
+        int cmd_index = 0;
 
         char *token = strtok(command, " ");
 
@@ -38,113 +45,93 @@ int main()
         {
             if(strcmp(token, "|") == 0)
             {
-                is_pipe = 1;
-                token = strtok(NULL, " ");
-                continue;
-            }
-
-            if(!is_pipe)
-            {
-                argv1[argc1++] = token;
+                cmds[cmd_index][argc[cmd_index]] = NULL;
+                cmd_index++;
             }
             else
             {
-                argv2[argc2++] = token;
+                cmds[cmd_index][argc[cmd_index]++] = token;
             }
 
             token = strtok(NULL, " ");
         }
 
-        argv1[argc1] = NULL;
-        argv2[argc2] = NULL;
+        cmds[cmd_index][argc[cmd_index]] = NULL;
 
-        // ---------------- NO PIPE CASE ----------------
-        if(argc1 == 0)
+        int num_cmds = cmd_index + 1;
+        int num_pipes = num_cmds - 1;
+
+        if(num_cmds == 0)
             continue;
 
-        if(!is_pipe)
+        // ---------------- CREATE PIPES ----------------
+
+        int pipes[num_pipes][2];
+
+        for(int i = 0; i < num_pipes; i++)
         {
-            pid_t pid = fork();
-
-            if(pid < 0)
+            if(pipe(pipes[i]) < 0)
             {
-                perror("fork failed");
-                continue;
-            }
-
-            if(pid == 0)
-            {
-                execvp(argv1[0], argv1);
-                perror("exec failed");
+                perror("pipe failed");
                 exit(1);
             }
-            else
+        }
+
+        // ---------------- FORK CHILDREN ----------------
+
+        pid_t pid[num_cmds];
+
+        for(int i = 0; i < num_cmds; i++)
+        {
+            pid[i] = fork();
+
+            if(pid[i] < 0)
             {
-                wait(NULL);
+                perror("fork failed");
+                exit(1);
             }
 
-            continue;
+            if(pid[i] == 0)
+            {
+                // -------- input from previous pipe --------
+                if(i > 0)
+                {
+                    dup2(pipes[i - 1][0], STDIN_FILENO);
+                }
+
+                // -------- output to next pipe --------
+                if(i < num_cmds - 1)
+                {
+                    dup2(pipes[i][1], STDOUT_FILENO);
+                }
+
+                // -------- close all pipes --------
+                for(int j = 0; j < num_pipes; j++)
+                {
+                    close(pipes[j][0]);
+                    close(pipes[j][1]);
+                }
+
+                // -------- execute command --------
+                execvp(cmds[i][0], cmds[i]);
+
+                perror("execvp failed");
+                exit(1);
+            }
         }
 
-        // ---------------- PIPE CASE ----------------
-        int fd[2];
+        // ---------------- PARENT CLEANUP ----------------
 
-        if(pipe(fd) < 0)
+        for(int i = 0; i < num_pipes; i++)
         {
-            perror("pipe failed");
-            continue;
+            close(pipes[i][0]);
+            close(pipes[i][1]);
         }
 
-        // -------- child 1 (left command) --------
-        pid_t pid1 = fork();
-
-        if(pid1 < 0)
+        for(int i = 0; i < num_cmds; i++)
         {
-            perror("fork failed");
-            continue;
+            waitpid(pid[i], NULL, 0);
         }
-
-        if(pid1 == 0)
-        {
-            dup2(fd[1], STDOUT_FILENO);
-
-            close(fd[0]);
-            close(fd[1]);
-
-            execvp(argv1[0], argv1);
-
-            perror("execvp failed");
-            exit(1);
-        }
-
-        // -------- child 2 (right command) --------
-        pid_t pid2 = fork();
-
-        if(pid2 < 0)
-        {
-            perror("fork failed");
-            continue;
-        }
-
-        if(pid2 == 0)
-        {
-            dup2(fd[0], STDIN_FILENO);
-
-            close(fd[0]);
-            close(fd[1]);
-
-            execvp(argv2[0], argv2);
-
-            perror("execvp failed");
-            exit(1);
-        }
-
-        // ---------------- parent ----------------
-        close(fd[0]);
-        close(fd[1]);
-
-        wait(NULL);
-        wait(NULL);
     }
 
     return 0;
