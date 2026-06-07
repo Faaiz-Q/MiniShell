@@ -16,7 +16,7 @@ int main()
     {
         char command[MAX_LEN];
 
-        printf("myshell> ");
+        printf("minishell> ");
 
         if(fgets(command, sizeof(command), stdin) == NULL)
         {
